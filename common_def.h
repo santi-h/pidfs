@@ -62,6 +62,7 @@ struct shared_thread_s
 struct shared_block_s
 {
     lock_t solution_lock;
+    bool solution_found;
     State goal;
     cost_t cutoff;
     int timestamp;

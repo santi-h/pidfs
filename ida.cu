@@ -1,5 +1,4 @@
 #include "ida.h"
-#include "Log.h"
 
 /*
  * struct ida_input
@@ -15,79 +14,82 @@
  *     cost_t* next_cutoff; // to put the next cutoff
  * };
  */
- __device__ void ida( shared_block_s& shared, cost_t cutoff, CudaArray<action_t>& solution, int iteration)
- {
-    int tid = threadIdx.x;
+ __device__ void ida( shared_block_s& shared, cost_t cutoff, CudaArray<action_t>& solution, int iteration, stack_t& initialStack)
+{
+     int tid = threadIdx.x;
     shared_thread_s& thread = shared.threads[tid];
-    stack_t& stack = thread.stack;
     cost_t next_cutoff = thread.next_cutoff;
-    int stack_size = stack.getSize();
-
-    while( stack_size && !shared.solution_lock)
+    bool exitIda = 0;
+    stack_t stack = initialStack;
+    while( !exitIda)
     {
-        stack_elem_s& top = stack.peek();
-        if( top.possible.getSize())
+        if( stack.getSize() <= 0)
         {
-            action_t child_action = top.possible.pop();
-            State child = top.state;
-            cost_t child_g = top.g + child.perform( child_action);
-            if( !_explored(stack, child))       //// EXPENSIVE
-            {
-                if( child_g > cutoff)
-                {
-                    if( child_g < next_cutoff) next_cutoff = child_g;
-                    if( LOG) logDelCutoff( thread.timestamp, iteration, cutoff, child_action);
-                }
-                else
-                {
-                    if( child == shared.goal)
-                    {
-                        if( atomicExch(&shared.solution_lock, 1) == 0)
-                        {
-                            printf("goal found by tid=%d\n", tid);
-                            for( int i=0; i<stack_size; i++) solution.push(stack[i].action);
-                            solution.push(child_action);
-                        }
-                        if( LOG) logGoal( thread.timestamp, iteration, cutoff);
-                    }
-                    else
-                    {
-                        // PUSH
-                        CudaArray<action_t> actions = child.actions();
-                        stack.push( stack_elem_s(child_action, child, actions, child_g));
-                        stack_size++;
-                        if( LOG) logPush( thread.timestamp, iteration, cutoff, actions, child, child_action);
-                    }
+            //... increase iteration
+            cutoff = next_cutoff;
+            //printf("tid %d cutoff %d\n", tid, cutoff);
+            stack = initialStack;
+            next_cutoff = INT_MAX;
+        }
+
+        if( stack.getSize() > 0)
+        {
+            if( shared.solution_found)
+            {//... a solution was found by another thread
+                if( solution.getSize()-1 <= cutoff)
+                {//... the solution is at least as optimal as the solution we could find
+                    exitIda = 1;
+                    //printf("tid %d not doing cutoff %d\n", tid, cutoff);
+					//printf("setting exit to true, tid=%d exitIda=%d\n", tid, exitIda);
                 }
             }
-            else
-                if( LOG) logDelExplored( thread.timestamp, iteration, cutoff, child_action);
-        }
-        else
-        {
-            // POP
-            stack.pop();
-            stack_size--;
-            if( LOG) logPop( thread.timestamp, iteration, cutoff, top.possible, top.state, top.action);
-        }
 
-        thread.timestamp++;
+            if( !exitIda)
+            {//... no solution was found yet, do IDA
+                stack_elem_s& top = stack.peek();
+                if( top.possible.getSize())
+                {
+                    action_t child_action = top.possible.pop();
+                    State child = top.state;
+                    cost_t child_g = top.g + child.perform( child_action);
+                    if( !_explored(stack, child))       //// EXPENSIVE
+                    {
+                        if( child_g > cutoff)
+                        {
+                            if( child_g < next_cutoff) next_cutoff = child_g;
+                        }
+                        else
+                        {
+                            if( child == shared.goal)
+                            {
+                                while( atomicExch(&shared.solution_lock, 1) != 0);
+                                //... critical section
+                                if( !shared.solution_found || cutoff < solution.getSize()-1)
+                                {
+                                    printf("goal found by tid=%d\n", tid);
+                                    int stack_size = stack.getSize();
+                                    for( int i=0; i<stack_size; i++) solution.push(stack[i].action);
+                                    solution.push(child_action);
+                                }
+                                shared.solution_found = 1;
+                                atomicExch(&shared.solution_lock, 0); // release lock
+                                exitIda = 1;
+                            }
+                            else
+                                stack.push( stack_elem_s(child_action, child, child.actions(), child_g));
+                        }
+                    }
+                }
+                else
+                    stack.pop();
+            }
+        }
     }
-    
-    thread.next_cutoff = next_cutoff;
  }
  
 __device__ bool _explored(const CudaArray<stack_elem_s>& stack, const State& state)
 {
-    /*
-	for( int i=stack.getSize()-1, c=0; i>=0 && c < 3; i--, c++)
-		if( stack[i].state == state) return 1;
-
-	return 0;
-    //*/
-	//*
     int limit = stack.getSize();
     for( int i=0; i<limit; i++) if( stack[i].state == state) return 1;
     return 0;
-	//*/
 }

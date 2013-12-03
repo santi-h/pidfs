@@ -4,7 +4,7 @@
 #define gpuErrchk(op,ans) { gpuAssert(op, ans, __FILE__, __LINE__); }
 #define THREADS_PER_BLOCK 4
 #define THREADS_PER_WARP 32
-#define LOG 1
+#define LOG 0
 
 #ifdef __CUDACC__
 #define CUDA_CALLABLE_MEMBER __host__ __device__
